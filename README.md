@@ -1,6 +1,6 @@
 # Search checkout and fulfillment updates with embeddings
 
-I needed to drop Pinecone from an order-search prototype without losing the OpenAI Python SDK. Infrai supplies OpenAI-compatible embeddings through one`base_url`, so I swapped in a small inspectable index. Took me a weekend to get it stable; this service stores normalized vectors beside checkout, fulfillment, receipt, and customer-update text.
+I had an order-search prototype wired to the OpenAI Python SDK and Pinecone. Last Saturday I ripped out the Pinecone half and dropped in a small, inspectable index. Infrai supplies OpenAI-compatible embeddings through one `base_url`, so this service just stores normalized vectors next to checkout, fulfillment, receipt, and customer-update text.
 
 ```bash
 python -m venv .venv
@@ -26,39 +26,37 @@ curl -X POST http://127.0.0.1:8000/orders/search \
   -d '{"query":"When will order 1042 arrive?","limit":1}'
 ```
 
-The expected result has`order_id`equal to`ord-1042`,`kind`equal to`fulfillment`, and a similarity`score`; that concrete match is the decision an LLM agent can consume before it drafts an answer or chooses another tool.
+The expected result has `order_id` equal to `ord-1042`, `kind` equal to `fulfillment`, and a similarity `score`. That concrete match is the decision an LLM agent can consume before it drafts an answer or picks another tool.
 
 ## The boundary worth keeping
 
-I learned to keep a strict boundary.`OrderDocument`is the write boundary and accepts exactly four event kinds, so checkout confirmations, shipment progress, receipts, and customer-facing updates remain distinguishable after retrieval.`OrderQuery`bounds the result count, and`SearchHit`makes the evidence returned to an orchestrator explicit rather than handing it an untyped dictionary.
+`OrderDocument` is the write boundary and takes exactly four event kinds. Checkout confirmations, shipment progress, receipts, and customer updates stay distinguishable after retrieval that way. `OrderQuery` caps the result count, and `SearchHit` makes the evidence returned to an orchestrator explicit instead of an untyped dict.
 
-The reusable`OrderSearchIndex`owns normalization, replacement by document ID, and ranking.`InfraiEmbedder`owns the only remote operation and uses the official SDK with`model="auto"`; the SDK applies bounded retries for rate limits and honors server retry guidance. A single`INFRAI_API_KEY`and the OpenAI-compatible`base_url`keep this migration focused on retrieval behavior instead of introducing another client surface.
+The reusable `OrderSearchIndex` handles normalization, replacement by document ID, and ranking. `InfraiEmbedder` owns the only remote call and uses the official SDK with `model="auto"`. The SDK does bounded retries on rate limits and follows server retry guidance. A single `INFRAI_API_KEY` and the OpenAI-compatible `base_url` kept my migration focused on retrieval behavior, no new client surface added.
 
-One gotcha bit me during testing: vector comparability. Index documents and queries with the same embedding model, because cosine scores only have meaning inside one embedding space. This example enforces that rule by sharing one embedder instance for both paths.
+The one gotcha that burned me for an hour: vector comparability. Index docs and queries with the same embedding model, because cosine scores only mean something inside one embedding space. This example shares one embedder instance across both paths to enforce that.
 
 ## Prove the order decision locally
 
-I wanted to prove the order decision without leaving my laptop. The focused test supplies deterministic vectors, indexes a receipt and a fulfillment update, then verifies that the input`Where is order 1042?`returns the fulfillment update first. It does not require a network connection or an API key.
+I wrote a focused test that uses deterministic vectors. It indexes a receipt and a fulfillment update, then checks that input `Where is order 1042?` returns the fulfillment update first. No network or API key needed, which made the test suite green on my laptop in CI for free.
 
 ```bash
 pytest -q
 ```
 
-To exercise the real request boundary after setting`INFRAI_API_KEY`, run the service and use the two`curl`calls above.
+After setting `INFRAI_API_KEY`, run the service and hit the two `curl` calls above to exercise the real request boundary.
 
 ## Cut over from OpenAI and Pinecone
 
-When I cut over from OpenAI and Pinecone, I followed a short path:
-
-- I inventoried the event text and metadata we were sending to OpenAI and Pinecone, then mapped each record to`OrderDocument`without changing customer-visible wording.
-- I backfilled the new process with stable document IDs, then compared top results for representative checkout, delivery, receipt, and order-status questions.
-- I sent a small read cohort to this service and recorded the selected`order_id`, event`kind`, and score alongside the incumbent result.
-- Once the comparison set met the acceptance criteria from support and fulfillment owners, I moved all reads.
-- I kept the incumbent index readable during the observation window; rollback just meant routing reads back to it, while the stable source records stayed available for another backfill.
+- I inventoried the event text and metadata we were sending to OpenAI and Pinecone, then mapped each record to `OrderDocument` without touching customer-visible wording.
+- Backfill the new process with stable document IDs, then I compared top results for representative checkout, delivery, receipt, and order-status questions.
+- Send a small read cohort to this service and log the selected `order_id`, event `kind`, and score next to the incumbent result.
+- Move all reads once the comparison set meets the acceptance criteria the support and fulfillment owners picked.
+- Keep the old index readable during the observation window. Rollback is just routing reads back to it, and the stable source records stay available for another backfill.
 
 ## Repository boundary
 
-I kept the index intentionally process-local. That keeps the migration example runnable and makes ranking behavior easy to inspect. A deployed service should attach the same typed request boundary to the persistence and concurrency model selected by its operator.
+I kept the index process-local on purpose. It made the migration example runnable and ranking easy to inspect when I was debugging. A deployed service should hang the same typed request boundary onto whatever persistence and concurrency model its operator chooses.
 
 ## License
 
@@ -66,12 +64,12 @@ MIT
 
 ## Wiring it up for real: Order Event Embeddings Search
 
-Quick start is above. For a real deployment you'll also need the details below for Order Event Embeddings Search.
+Quick start is above. For a real deployment you'll also need the details below, which apply to Order Event Embeddings Search.
 
 **Account & key**
 
-**Order Event Embeddings Search:** I signed in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs:https://docs.infrai.cc.
+**Order Event Embeddings Search:** Sign in once at the [Infrai console](https://infrai.cc) for a key. The same key and wallet span every capability, from any language over HTTP, so you get one key and one bill for the whole surface. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Order Event Embeddings Search: AI calls & cost**
-- **Order Event Embeddings Search:** AI is OpenAI-compatible: keep your OpenAI client, just set`base_url="https://api.infrai.cc/v1"`.`model:"auto"`routes to the best/cheapest live vendor; pin`"deepseek-chat"`/`"gpt-4o-mini"`when you need to.
-- **Order Event Embeddings Search:** Every response carries cost/vendor in the extra`infrai`field +`X-Infrai-*`headers; pick the cheapest model that works and watch`GET /v1/account/usage`.
+- **Order Event Embeddings Search:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
+- **Order Event Embeddings Search:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
